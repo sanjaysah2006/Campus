@@ -5,75 +5,113 @@ from django.http import HttpResponse
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated, IsAdminUser
+from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
+from rest_framework.parsers import MultiPartParser, FormParser
 
 from openpyxl import Workbook
 
 from .models import Event, EventInteraction, EventRegistration
-from .serializers import EventCreateSerializer
+from .serializers import EventCreateSerializer, EventSerializer
 from clubs.models import Club
-from users.models import StudentProfile
 
 
-# ============================================
+import re
+from PIL import Image
+
+
+# ================================
 # CREATE EVENT (ORGANIZER ONLY)
-# ============================================
-class EventCreateView(APIView):
+# ================================
+
+class CreateEventView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        if request.user.role != "ORGANIZER":
-            return Response(
-                {"detail": "Only organizers can create events"},
-                status=403
-            )
 
-        # 🔥 Find organizer's club
+        user = request.user
+
+        # 🔥 AUTO ASSIGN CLUB (IMPORTANT)
         try:
-            club = Club.objects.get(organizer=request.user)
+            club = Club.objects.get(organizer=user)
         except Club.DoesNotExist:
             return Response(
-                {"detail": "No club assigned to this organizer"},
-                status=400
+                {"error": "You are not assigned to any club"},
+                status=status.HTTP_400_BAD_REQUEST
             )
 
-        serializer = EventCreateSerializer(data=request.data)
+        event = Event.objects.create(
+            title=request.data.get("title"),
+            description=request.data.get("description"),
+            date=request.data.get("date"),
+            location=request.data.get("location"),
+            club=club,
+            organizer=user,
+            image=request.FILES.get("image"),
+            approved=False
+        )
 
-        if serializer.is_valid():
-            serializer.save(club=club)  # 🔥 Auto assign club
-            return Response(
-                {"message": "Event created successfully"},
-                status=201
-            )
-
-        return Response(serializer.errors, status=400)
+        return Response(
+            {"message": "Event created successfully"},
+            status=status.HTTP_201_CREATED
+        )
 
 
-# ============================================
-# STUDENT FEED
-# ============================================
+# ================================
+# LIST EVENTS (APPROVED ONLY)
+# ================================
+
+class EventListView(APIView):
+
+    def get(self, request):
+
+        events = Event.objects.filter(approved=True).order_by("-date")
+
+        serializer = EventSerializer(events, many=True)
+
+        return Response(serializer.data)
+
+
+
+# =====================================================
+# STUDENT DASHBOARD
+# =====================================================
 class StudentDashboardView(APIView):
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+
         if request.user.role != "STUDENT":
             return Response({"detail": "Access denied"}, status=403)
 
-        events = Event.objects.filter(approved=True)
-        serializer = EventCreateSerializer(events, many=True)
+        events = Event.objects.select_related("club").filter(
+            approved=True
+        )
+
+        serializer = EventSerializer(
+            events,
+            many=True,
+            context={"request": request}
+        )
+
         return Response(serializer.data)
 
+
 # =====================================================
-# EVENT REGISTER (STUDENT ONLY)
+# EVENT REGISTER
 # =====================================================
 class EventRegisterView(APIView):
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, event_id):
 
         if request.user.role != "STUDENT":
-            return Response({"detail": "Only students can register"}, status=403)
+            return Response(
+                {"detail": "Only students can register"},
+                status=403
+            )
 
         event = get_object_or_404(Event, id=event_id, approved=True)
 
@@ -89,9 +127,10 @@ class EventRegisterView(APIView):
 
 
 # =====================================================
-# EVENT RECOMMENDATION (STUDENT ONLY)
+# EVENT RECOMMENDATION
 # =====================================================
 class EventRecommendationView(APIView):
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -111,7 +150,7 @@ class EventRecommendationView(APIView):
         if not top_category:
             return Response([])
 
-        registered_event_ids = EventRegistration.objects.filter(
+        registered_ids = EventRegistration.objects.filter(
             student=request.user
         ).values_list("event_id", flat=True)
 
@@ -119,81 +158,95 @@ class EventRecommendationView(APIView):
             approved=True,
             category=top_category["event__category"],
             end_datetime__gte=now()
-        ).exclude(id__in=registered_event_ids)
+        ).exclude(id__in=registered_ids)
 
-        data = [{
-            "id": e.id,
-            "title": e.title,
-            "category": e.category,
-            "club": e.club.name
-        } for e in events]
+        serializer = EventSerializer(
+            events,
+            many=True,
+            context={"request": request}
+        )
 
-        return Response(data)
+        return Response(serializer.data)
 
 
-# =====================================================
+# ================================
 # ADMIN APPROVE EVENT
-# =====================================================
-class AdminApproveEventView(APIView):
+# ================================
+
+class ApproveEventView(APIView):
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, event_id):
+
         if request.user.role != "ADMIN":
-            return Response({"detail": "Not allowed"}, status=403)
+
+            return Response(
+                {"detail": "Only admin can approve"},
+                status=403
+            )
 
         event = get_object_or_404(Event, id=event_id)
+
         event.approved = True
         event.save()
 
-        return Response({"message": "Event approved successfully"})
+        return Response({
+            "message": "Event approved successfully"
+        })
 
-class AdminAllEventsView(APIView):
-    permission_classes = [IsAuthenticated]
 
-    def get(self, request):
-        if request.user.role != "ADMIN":
-            return Response({"detail": "Not allowed"}, status=403)
+# =====================================================
+# ADMIN ALL EVENTS
+# =====================================================
+# class AdminAllEventsView(APIView):
 
-        events = Event.objects.all().order_by("-created_at")
+#     permission_classes = [IsAuthenticated]
 
-        data = [{
-            "id": e.id,
-            "title": e.title,
-            "category": e.category,
-            "club": e.club.name,
-            "approved": e.approved,
-            "start_datetime": e.start_datetime,
-        } for e in events]
+#     def get(self, request):
 
-        return Response(data)
+#         if request.user.role != "ADMIN":
+#             return Response({"detail": "Not allowed"}, status=403)
+
+#         events = Event.objects.select_related("club").all().order_by("-created_at")
+
+#         serializer = EventSerializer(
+#             events,
+#             many=True,
+#             context={"request": request}
+#         )
+
+#         return Response(serializer.data)
+
+
 # =====================================================
 # ADMIN PENDING EVENTS
 # =====================================================
 class AdminPendingEventsView(APIView):
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        # 🔥 Custom role check
+
         if request.user.role != "ADMIN":
             return Response({"detail": "Not allowed"}, status=403)
 
-        events = Event.objects.filter(approved=False)
+        events = Event.objects.select_related("club").filter(approved=False)
 
-        data = [{
-            "id": e.id,
-            "title": e.title,
-            "category": e.category,
-            "club": e.club.name,
-            "start_datetime": e.start_datetime,
-        } for e in events]
+        serializer = EventSerializer(
+            events,
+            many=True,
+            context={"request": request}
+        )
 
-        return Response(data)
+        return Response(serializer.data)
 
 
 # =====================================================
-# ADMIN DASHBOARD STATS
+# ADMIN DASHBOARD
 # =====================================================
 class AdminDashboardStats(APIView):
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -214,17 +267,19 @@ class AdminDashboardStats(APIView):
         }
 
         return Response(data)
-    
+
+
+# =====================================================
+# EVENT VIEW TRACK
+# =====================================================
 class EventViewTrack(APIView):
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request, event_id):
 
         if request.user.role != "STUDENT":
-            return Response(
-                {"detail": "Only students can view events"},
-                status=403
-            )
+            return Response({"detail": "Only students can view events"}, status=403)
 
         event = get_object_or_404(Event, id=event_id)
 
@@ -234,44 +289,130 @@ class EventViewTrack(APIView):
             interaction_type="VIEW"
         )
 
-        return Response(
-            {"message": "Event view recorded"},
-            status=200
-        )
-    
+        return Response({"message": "Event view recorded"})
 
+
+# =====================================================
+# ORGANIZER EVENT HISTORY
+# =====================================================
 class OrganizerEventHistoryView(APIView):
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+
         if request.user.role != "ORGANIZER":
             return Response({"detail": "Access denied"}, status=403)
 
-        events = Event.objects.filter(club__organizer=request.user)
-        serializer = EventCreateSerializer(events, many=True)
+        events = Event.objects.select_related("club").filter(
+            club__organizer=request.user
+        )
+
+        serializer = EventSerializer(
+            events,
+            many=True,
+            context={"request": request}
+        )
+
         return Response(serializer.data)
-    
+
+
+# ================================
+# EVENT DETAIL
+# ================================
+
 class EventDetailView(APIView):
+
+    def get(self, request, pk):
+
+        event = get_object_or_404(Event, id=pk)
+
+        serializer = EventSerializer(event)
+
+        return Response(serializer.data)
+
+
+# =====================================================
+# EXPORT EVENT REGISTRATIONS (EXCEL)
+# =====================================================
+class ExportEventRegistrationsView(APIView):
+
     permission_classes = [IsAuthenticated]
-    queryset = Event.objects.all()
-    serializer_class = EventCreateSerializer
 
     def get(self, request, event_id):
-        event = get_object_or_404(Event, id=event_id)
-        
-        data = {
-            "id": event.id,
-            "title": event.title,
-            "description": event.description,
-            "category": event.category,
-            "venue": event.venue,
-            "start_datetime": event.start_datetime,
-            "end_datetime": event.end_datetime,
-            "approved": event.approved,
-            "club": {
-                "id": event.club.id,
-                "name": event.club.name
-            }
-        }
 
-        return Response(data)
+        if request.user.role not in ["ADMIN", "ORGANIZER"]:
+            return Response({"detail": "Not allowed"}, status=403)
+
+        event = get_object_or_404(Event, id=event_id)
+
+        registrations = EventRegistration.objects.filter(
+            event=event
+        ).select_related("student")
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Registrations"
+
+        ws.append(["Student Name", "Email", "Registered At"])
+
+        for reg in registrations:
+            ws.append([
+                reg.student.username,
+                reg.student.email,
+                reg.registered_at.strftime("%Y-%m-%d %H:%M")
+            ])
+
+        response = HttpResponse(
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+        response["Content-Disposition"] = f'attachment; filename="event_{event.id}_registrations.xlsx"'
+
+        wb.save(response)
+
+        return response
+
+
+# =====================================================
+# ID CARD OCR SCAN
+# =====================================================
+class ScanStudentID(APIView):
+
+    parser_classes = [MultiPartParser]
+
+    def post(self, request):
+
+        image = request.FILES.get("image")
+
+        if not image:
+            return Response({"error": "No image uploaded"}, status=400)
+
+        try:
+
+            img = Image.open(image)
+
+            text = pytesseract.image_to_string(img)
+
+            roll = re.search(r"Roll\s*No\s*:\s*(\d+)", text)
+            name = re.search(r"Name\s*:\s*([A-Za-z ]+)", text)
+            course = re.search(r"B\.TECH[- ]?[A-Z]+", text)
+            batch = re.search(r"\d{4}-\d{2}", text)
+
+            return Response({
+                "name": name.group(1) if name else None,
+                "roll_no": roll.group(1) if roll else None,
+                "course": course.group(0) if course else None,
+                "batch": batch.group(0) if batch else None
+            })
+
+        except Exception as e:
+            return Response({
+                "error": "OCR failed",
+                "details": str(e)
+            }, status=500)
+        
+
+
+
+

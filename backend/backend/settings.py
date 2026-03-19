@@ -43,10 +43,10 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     "rest_framework_simplejwt",
-    'users',
-    'clubs',
+    'users.apps.UsersConfig',
+    'clubs.apps.ClubsConfig',
     'calendar_app',
-    'events',
+    'events.apps.EventsConfig',
 ]
 
 MIDDLEWARE = [
@@ -139,7 +139,7 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 MEDIA_URL = "/media/"
-MEDIA_ROOT = BASE_DIR / "media"
+MEDIA_ROOT = os.path.join(BASE_DIR, "media")
 
 STATIC_URL = 'static/'
 

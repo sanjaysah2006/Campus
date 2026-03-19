@@ -1,97 +1,88 @@
 from rest_framework import serializers
 from .models import User, StudentProfile
+from datetime import datetime
 
 
-# =====================================================
-# 1️⃣ GENERIC REGISTER SERIALIZER (STUDENT / ORGANIZER)
-# =====================================================
-class RegisterSerializer(serializers.Serializer):
-    username = serializers.CharField()
+class StudentRegisterSerializer(serializers.Serializer):
+
+    name = serializers.CharField()
+    roll_no = serializers.CharField()
+    section = serializers.CharField()
+    email = serializers.EmailField()
+    phone = serializers.CharField()
     password = serializers.CharField(write_only=True)
-    role = serializers.ChoiceField(choices=['STUDENT', 'ORGANIZER'])
 
-    # Student-only fields
-    roll_no = serializers.CharField(required=False)
-    semester = serializers.IntegerField(required=False)
-    section = serializers.CharField(required=False)
-    phone = serializers.CharField(required=False)
+    id_card = serializers.ImageField(required=False)
 
-    def validate(self, data):
-        if data['role'] == 'STUDENT':
-            required_fields = ['roll_no', 'semester', 'section', 'phone']
-            for field in required_fields:
-                if field not in data:
-                    raise serializers.ValidationError(
-                        f"{field} is required for student registration"
-                    )
-        return data
+    def validate_roll_no(self, value):
 
-    def create(self, validated_data):
-        role = validated_data.pop('role')
-        password = validated_data.pop('password')
-
-        # Create user
-        user = User.objects.create_user(
-            username=validated_data['username'],
-            password=password,
-            role=role
-        )
-
-        # Create student profile if student
-        if role == 'STUDENT':
-            StudentProfile.objects.create(
-                user=user,
-                roll_no=validated_data.get('roll_no'),
-                semester=validated_data.get('semester'),
-                section=validated_data.get('section'),
-                phone=validated_data.get('phone'),
+        if User.objects.filter(username=value).exists():
+            raise serializers.ValidationError(
+                "Student with this roll number already exists."
             )
 
-        return user
+        return value
 
 
-# =====================================================
-# 2️⃣ DEDICATED STUDENT REGISTER SERIALIZER (RECOMMENDED)
-# =====================================================
-class StudentRegisterSerializer(serializers.ModelSerializer):
-    roll_no = serializers.CharField()
-    semester = serializers.IntegerField()
-    section = serializers.CharField()
-    phone = serializers.CharField()
+    def get_batch(self, roll):
 
-    class Meta:
-        model = User
-        fields = [
-            'username', 'password',
-            'first_name', 'last_name',
-            'email',
-            'roll_no', 'semester',
-            'section', 'phone'
-        ]
-        extra_kwargs = {
-            'password': {'write_only': True}
-        }
+        if roll.startswith("1123"):
+            return "2023-27"
+
+        if roll.startswith("1122"):
+            return "2022-26"
+
+        if roll.startswith("1124"):
+            return "2024-28"
+
+        return "Unknown"
+
+
+    def calculate_semester(self, batch):
+
+        if batch == "Unknown":
+            return 1
+
+        year = int(batch.split("-")[0])
+        current_year = datetime.now().year
+
+        semester = (current_year - year) * 2 + 1
+
+        if semester < 1:
+            semester = 1
+
+        if semester > 8:
+            semester = 8
+
+        return semester
+
 
     def create(self, validated_data):
-        # 🔹 Extract profile fields first
-        roll_no = validated_data.pop('roll_no')
-        semester = validated_data.pop('semester')
-        section = validated_data.pop('section')
-        phone = validated_data.pop('phone')
 
-        # 🔹 Create user
+        name = validated_data["name"]
+        roll = validated_data["roll_no"]
+
+        batch = self.get_batch(roll)
+        semester = self.calculate_semester(batch)
+
         user = User.objects.create_user(
-            role='STUDENT',
-            **validated_data
+            username=roll,
+            email=validated_data["email"],
+            password=validated_data["password"],
+            role="STUDENT",
+            first_name=name
         )
 
-        # 🔹 Create student profile
         StudentProfile.objects.create(
             user=user,
-            roll_no=roll_no,
+            name=name,
+            roll_no=roll,
+            course="B.Tech CSE",
+            batch=batch,
             semester=semester,
-            section=section,
-            phone=phone
+            section=validated_data["section"],
+            phone=validated_data["phone"],
+            id_card=validated_data.get("id_card")
         )
 
         return user

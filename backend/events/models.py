@@ -1,33 +1,13 @@
 from django.db import models
-from clubs.models import Club
 from users.models import User
+from clubs.models import Club
 
 
 class Event(models.Model):
 
-    CATEGORY_CHOICES = (
-        ('TECH', 'Technical'),
-        ('CULTURAL', 'Cultural'),
-        ('SPORTS', 'Sports'),
-        ('WORKSHOP', 'Workshop'),
-        ('SEMINAR', 'Seminar'),
-        ('OTHER', 'Other'),
-    )
-
     title = models.CharField(max_length=200)
+
     description = models.TextField()
-
-    category = models.CharField(
-        max_length=20,
-        choices=CATEGORY_CHOICES
-    )
-
-    # ✅ Event Poster / Banner Upload
-    poster = models.ImageField(
-        upload_to="event_posters/",
-        null=True,
-        blank=True
-    )
 
     club = models.ForeignKey(
         Club,
@@ -35,17 +15,28 @@ class Event(models.Model):
         related_name="events"
     )
 
-    venue = models.CharField(max_length=200)
+    organizer = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="organized_events"
+    )
 
-    start_datetime = models.DateTimeField()
-    end_datetime = models.DateTimeField()
+    date = models.DateField()
+
+    location = models.CharField(max_length=200)
+
+    image = models.ImageField(
+        upload_to="event_images/",
+        null=True,
+        blank=True
+    )
 
     approved = models.BooleanField(default=False)
 
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return self.title
+        return f"{self.title} ({self.club.name})"
 
 
 # ---------------------------------------------
